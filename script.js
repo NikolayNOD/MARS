@@ -4,45 +4,52 @@ const launchBtn = document.getElementById('launchBtn');
 const resultDiv = document.getElementById('result');
 const dateInput = document.getElementById('launchDate');
 
-// Идеальный угол для перелета Земля-Марс (в градусах) — это угол Гомановской траектории
 const IDEAL_ANGLE = 44; 
 
-// Функция для запроса данных у NASA JPL Horizons API
 async function fetchPlanetData(planetId, startDate, endDate) {
-    // planetId: 399 - Земля, 499 - Марс
-    // Запрос векторов (положение и скорость) относительно барицентра Солнечной системы (500@0)
-    const url = `https://ssd.jpl.nasa.gov/api/horizons.api?format=json&COMMAND='${planetId}'&OBJ_DATA='NO'&MAKE_EPHEM='YES'&EPHEM_TYPE='VECTORS'&CENTER='500@0'&START_TIME='${startDate}'&STOP_TIME='${endDate}'&STEP_SIZE='1 d'`;
+    // Убираем лишние кавычки и пробелы, формируем правильный URL
+    const url = `https://ssd.jpl.nasa.gov/api/horizons.api?format=json&COMMAND=${planetId}&OBJ_DATA=NO&MAKE_EPHEM=YES&EPHEM_TYPE=VECTORS&CENTER=500@0&START_TIME=${startDate}&STOP_TIME=${endDate}&STEP_SIZE=1d`;
     
+    console.log(`Запрос к NASA для planetId ${planetId}:`, url);
+
     try {
         const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
         const data = await response.json();
-        // NASA возвращает данные в виде текстовой таблицы внутри JSON-объекта
-        const textData = data.result;
-        return parseHorizonsData(textData);
+        
+        // Проверяем, есть ли поле result
+        if (!data.result) {
+            console.error("NASA вернула ответ без поля 'result':", data);
+            return null;
+        }
+
+        return parseHorizonsData(data.result);
     } catch (error) {
-        console.error("Ошибка при получении данных:", error);
+        console.error(`Ошибка при запросе к NASA для planetId ${planetId}:`, error);
         return null;
     }
 }
 
-// Парсинг текстового ответа от NASA (вытаскиваем координаты X и Y)
 function parseHorizonsData(text) {
     const lines = text.split('\n');
     const positions = [];
     let startParsing = false;
 
     for (let line of lines) {
-        if (line.includes('$$SOE')) { // Начало данных
+        if (line.includes('$$SOE')) {
             startParsing = true;
             continue;
         }
-        if (line.includes('$$EOE')) { // Конец данных
+        if (line.includes('$$EOE')) {
             break;
         }
         if (startParsing) {
-            // Формат строки: Date, X, Y, Z, VX, VY, VZ
             const parts = line.trim().split(/\s+/);
-            if (parts.length >= 4) {
+            // Убедимся, что в строке достаточно данных
+            if (parts.length >= 4 && !isNaN(parseFloat(parts[1])) && !isNaN(parseFloat(parts[2]))) {
                 positions.push({
                     date: parts[0],
                     x: parseFloat(parts[1]),
@@ -51,21 +58,19 @@ function parseHorizonsData(text) {
             }
         }
     }
+    console.log(`Распарсено ${positions.length} строк данных.`);
     return positions;
 }
 
-// Расчет угла между Землей и Марсом относительно Солнца
 function calculateAngle(earthPos, marsPos) {
     const angleEarth = Math.atan2(earthPos.y, earthPos.x);
     const angleMars = Math.atan2(marsPos.y, marsPos.x);
     let angleDiff = angleMars - angleEarth;
     
-    // Приводим угол к диапазону 0-360 градусов
     if (angleDiff < 0) angleDiff += 2 * Math.PI;
     return angleDiff * (180 / Math.PI);
 }
 
-// Отрисовка планет на Canvas (упрощенная 2D-визуализация)
 function drawOrbits(earthPos, marsPos) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const centerX = canvas.width / 2;
@@ -78,7 +83,6 @@ function drawOrbits(earthPos, marsPos) {
     ctx.fill();
     ctx.fillText("Солнце", centerX - 20, centerY + 25);
 
-    // Масштабирование (упрощенное, чтобы планеты влезли на экран)
     const scale = 0.0000005; 
     
     // Рисуем Землю
@@ -96,7 +100,6 @@ function drawOrbits(earthPos, marsPos) {
     ctx.fillText("Марс", centerX + marsPos.x * scale + 10, centerY - marsPos.y * scale);
 }
 
-// Главная функция игры (вызывается по клику)
 async function checkLaunch() {
     const selectedDate = dateInput.value;
     if (!selectedDate) {
@@ -105,42 +108,48 @@ async function checkLaunch() {
     }
 
     resultDiv.innerHTML = "Запрос к NASA... ⏳";
+    console.log("Начало запроса для даты:", selectedDate);
 
-    // Запрашиваем данные на выбранную дату (и +1 день, чтобы захватить сутки)
+    // Формируем даты в формате YYYY-MM-DD
     const nextDay = new Date(new Date(selectedDate).getTime() + 86400000).toISOString().split('T')[0];
+    const startDate = selectedDate; // Используем выбранную дату как старт
     
-    // Получаем данные для Земли (399) и Марса (499)
-    const earthData = await fetchPlanetData(399, selectedDate, nextDay);
-    const marsData = await fetchPlanetData(499, selectedDate, nextDay);
+    try {
+        const earthData = await fetchPlanetData(399, startDate, nextDay);
+        const marsData = await fetchPlanetData(499, startDate, nextDay);
 
-    if (!earthData || !marsData || earthData.length === 0 || marsData.length === 0) {
-        resultDiv.innerHTML = "Ошибка получения данных от NASA. Попробуй еще раз.";
-        return;
+        if (!earthData || !marsData || earthData.length === 0 || marsData.length === 0) {
+            throw new Error("Не удалось получить данные от NASA.");
+        }
+
+        const earthPos = earthData[0];
+        const marsPos = marsData[0];
+
+        drawOrbits(earthPos, marsPos);
+
+        const angle = calculateAngle(earthPos, marsPos);
+        const diff = Math.abs(angle - IDEAL_ANGLE);
+
+        let message = `Угол между Землей и Марсом: <b>${angle.toFixed(2)}°</b><br>`;
+        message += `Идеальный угол для старта: <b>${IDEAL_ANGLE}°</b><br><br>`;
+
+        if (diff <= 5) {
+            message += "🎉 <b>ИДЕАЛЬНЫЙ СТАРТ!</b> Ракета долетит до Марса с минимальным расходом топлива!";
+            resultDiv.style.border = "2px solid #00ff00";
+        } else if (diff <= 15) {
+            message += "⚠️ <b>Хороший старт.</b> Но придется потратить немного больше топлива.";
+            resultDiv.style.border = "2px solid #ffcc00";
+        } else {
+            message += "❌ <b>Неудачная дата.</b> Марс слишком далеко или близко. Ракета не долетит.";
+            resultDiv.style.border = "2px solid #ff4d4d";
+        }
+
+        resultDiv.innerHTML = message;
+        console.log("Успех! Угол:", angle);
+    } catch (error) {
+        console.error("Критическая ошибка в игре:", error);
+        resultDiv.innerHTML = "Ошибка получения данных от NASA. Попробуй еще раз. (Проверь консоль F12)";
     }
-
-    const earthPos = earthData[0];
-    const marsPos = marsData[0];
-
-    drawOrbits(earthPos, marsPos);
-
-    const angle = calculateAngle(earthPos, marsPos);
-    const diff = Math.abs(angle - IDEAL_ANGLE);
-
-    let message = `Угол между Землей и Марсом: <b>${angle.toFixed(2)}°</b><br>`;
-    message += `Идеальный угол для старта: <b>${IDEAL_ANGLE}°</b><br><br>`;
-
-    if (diff <= 5) {
-        message += "🎉 <b>ИДЕАЛЬНЫЙ СТАРТ!</b> Ракета долетит до Марса с минимальным расходом топлива!";
-        resultDiv.style.border = "2px solid #00ff00";
-    } else if (diff <= 15) {
-        message += "⚠️ <b>Хороший старт.</b> Но придется потратить немного больше топлива.";
-        resultDiv.style.border = "2px solid #ffcc00";
-    } else {
-        message += "❌ <b>Неудачная дата.</b> Марс слишком далеко или близко. Ракета не долетит.";
-        resultDiv.style.border = "2px solid #ff4d4d";
-    }
-
-    resultDiv.innerHTML = message;
 }
 
 launchBtn.addEventListener('click', checkLaunch);
